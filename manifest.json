@@ -1,16 +1,15 @@
 {
-  "applications": {
+  "manifest_version": 3,
+  "browser_specific_settings": {
     "gecko": {
       "id": "srbTranslit@srbodroid.com"
     }
   },
-  "manifest_version": 2,
   "name": "srbTranslit",
-  "version": "1.2",
+  "version": "2.0",
   "permissions": [
     "activeTab",
-    "webNavigation",
-    "<all_urls>"
+    "scripting"
   ],
   "description": "Transliterates Serbian Cyrillic to Serbian Latin on any web page",
   "background": {
@@ -21,9 +20,10 @@
   "icons": {
     "128": "is-on.png"
   },
-  "browser_action": {
+  "action": {
     "default_icon": "is-on.png",
     "default_title": "srbTranslit",
     "browser_style": true
   }
 }
+
