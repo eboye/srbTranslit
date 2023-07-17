@@ -6,10 +6,11 @@
     }
   },
   "name": "srbTranslit",
-  "version": "2.0",
+  "version": "2.1",
   "permissions": [
     "activeTab",
-    "scripting"
+    "scripting",
+    "contextMenus"
   ],
   "description": "Transliterates Serbian Cyrillic to Serbian Latin on any web page",
   "background": {
@@ -22,8 +23,7 @@
   },
   "action": {
     "default_icon": "is-on.png",
-    "default_title": "srbTranslit",
-    "browser_style": true
+    "default_title": "srbTranslit"
   }
 }
 

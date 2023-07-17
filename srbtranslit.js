@@ -1,6 +1,6 @@
 /*eslint-env es6*/
 /*global document*/
-var replace = {
+let replace = {
     "А": "A",
     "Б": "B",
     "В": "V",
@@ -85,7 +85,7 @@ var replace = {
   },
   getElementsWithNoChildren = function (target) {
     'use strict';
-    var candidates;
+    let candidates;
 
     if (target && typeof target.querySelectorAll === 'function') {
       candidates = target.querySelectorAll('*');
@@ -99,7 +99,7 @@ var replace = {
       if (elem.children.length === 0) {
         return true;
       } else {
-        var pass = false;
+        let pass = false;
         elem.childNodes.forEach(function (text) {
           if (typeof text.nodeValue !== 'undefined') {
             pass = typeof text.nodeValue !== 'undefined';
@@ -119,6 +119,12 @@ function transliterate(word) {
   }).join('');
 }
 
+function iterator(text) {
+  if (text.nodeValue && text.nodeValue.trim() !== '') {
+    text.nodeValue = transliterate(text.nodeValue);
+  }
+}
+
 function srbTranslit() {
   'use strict';
   let x,
@@ -132,11 +138,7 @@ function srbTranslit() {
         elem.textContent = transliterate(elem.textContent);
       }
     } else {
-      elem.childNodes.forEach(function (text) {
-        if (text.nodeValue && text.nodeValue.trim() !== '') {
-          text.nodeValue = transliterate(text.nodeValue);
-        }
-      });
+      elem.childNodes.forEach(iterator);
     }
   }
 }
