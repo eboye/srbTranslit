@@ -2,7 +2,10 @@
 
 // --- Helpers for executing scripts and managing domain state ---
 async function execute(tab, direction) {
-  const file = direction === 'lat_to_cyr' ? 'srbtranslit.js' : 'srbtranslitToCyr.js';
+  // Map directions to the correct content script:
+  //  - 'cyr_to_lat' should use srbtranslit.js (Cyrillic → Latin)
+  //  - 'lat_to_cyr' should use srbtranslitToCyr.js (Latin → Cyrillic)
+  const file = direction === 'cyr_to_lat' ? 'srbtranslit.js' : 'srbtranslitToCyr.js';
   try {
     await browser.scripting.executeScript({
       target: {
