@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <title>srbTranslit</title>
+    <link href="popup.css" rel="stylesheet"/>
+</head>
+<body>
+<div class="container">
+    <h1>srbTranslit</h1>
+    <div id="domainRow">
+        <span class="label">Domen:</span>
+        <span id="domain">…</span>
+    </div>
+    <div id="statusRow">
+        <span class="label">Status:</span>
+        <span id="status">…</span>
+    </div>
+    <div id="dirRow">
+        <label class="label" for="direction">Smer preslovljavanja:</label>
+        <select id="direction">
+            <option value="lat_to_cyr">Latinica → Ćirilica</option>
+            <option value="cyr_to_lat">Ćirilica → Latinica</option>
+        </select>
+    </div>
+
+    <div class="buttons">
+        <button id="grant">Daj dozvolu</button>
+        <button id="enable">Uključi uvek</button>
+        <button id="disable">Onemogući</button>
+        <button class="primary" id="runOnce">Pokreni jednom</button>
+        <button id="openAddons" title="Otvori Add-ons Menadžer">Otvori Add‑ons</button>
+    </div>
+
+    <div class="hint" id="hint"></div>
+</div>
+
+<script src="popup.js"></script>
+</body>
+</html>

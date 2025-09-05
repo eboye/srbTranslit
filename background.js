@@ -25,13 +25,139 @@ function getHostname(url) {
   }
 }
 
-function rootFor(hostname) {
+// Best-effort registrable domain (eTLD+1) extractor.
+// Note: Not a full PSL, but handles common 2-level public suffixes like gov.rs, ac.rs, co.uk, etc.
+function registrableDomain(hostname) {
   if (!hostname) return null;
   const parts = hostname.split('.');
-  if (parts.length >= 2) {
-    return parts.slice(-2).join('.');
+  if (parts.length <= 2) return hostname;
+  const tld = parts[parts.length - 1];
+  const sld = parts[parts.length - 2];
+  const knownSecondLevel = new Set(['co', 'com', 'net', 'org', 'gov', 'edu', 'ac']);
+  if (tld.length === 2 && knownSecondLevel.has(sld)) {
+    // e.g., foo.bar.gov.rs -> bar.gov.rs
+    return parts.slice(-3).join('.');
   }
-  return hostname;
+  // default: last two labels
+  return parts.slice(-2).join('.');
+}
+
+// --- Dynamic host permissions helpers ---
+function originPatternsForBase(base) {
+  if (!base) return [];
+  return [
+    `*://${base}/*`,
+    `*://*.${base}/*`,
+  ];
+}
+
+// Returns true if ANY of the provided origins is granted (logical OR).
+async function hasOrigins(origins) {
+  try {
+    for (const o of origins) {
+      const ok = await browser.permissions.contains({origins: [o]});
+      if (ok) return true;
+    }
+    return false;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function requestOriginsFromUser(origins) {
+  try {
+    return await browser.permissions.request({origins});
+  } catch (e) {
+    return false;
+  }
+}
+
+async function ensurePermissionForBase(baseDomain, canPrompt) {
+  const origins = originPatternsForBase(baseDomain);
+  const has = await hasOrigins(origins);
+  if (has) return true;
+  if (!canPrompt) return false;
+  const granted = await requestOriginsFromUser(origins);
+  try {
+    console.debug('[srbTranslit] permissions.request', baseDomain, '=>', granted);
+  } catch (_) {}
+  if (granted) {
+    // Clear any stale notification throttle for this base so future missing notices (if any) are timely
+    try {
+      const { notifiedMissingPermission = {} } = await browser.storage.local.get('notifiedMissingPermission');
+      delete notifiedMissingPermission[baseDomain];
+      await browser.storage.local.set({ notifiedMissingPermission });
+    } catch (_) {}
+  }
+  return granted;
+}
+
+// --- User notification helpers (throttled per domain) ---
+async function shouldNotifyForBase(base) {
+  try {
+    // If permission is already present, do not notify and clear stale throttle
+    const hasPerm = await hasOrigins(originPatternsForBase(base));
+    if (hasPerm) {
+      try {
+        const { notifiedMissingPermission = {} } = await browser.storage.local.get('notifiedMissingPermission');
+        if (notifiedMissingPermission[base]) {
+          delete notifiedMissingPermission[base];
+          await browser.storage.local.set({ notifiedMissingPermission });
+        }
+      } catch (_) {}
+      return false;
+    }
+    const {notifiedMissingPermission = {}} = await browser.storage.local.get('notifiedMissingPermission');
+    const last = notifiedMissingPermission[base] || 0;
+    const now = Date.now();
+    // Throttle to once per 6 hours per base domain
+    if (now - last > 6 * 60 * 60 * 1000) {
+      notifiedMissingPermission[base] = now;
+      await browser.storage.local.set({notifiedMissingPermission});
+      return true;
+    }
+    return false;
+  } catch (_) {
+    return true;
+  }
+}
+
+async function notifyMissingPermission(base) {
+  try {
+    const ok = await shouldNotifyForBase(base);
+    if (!ok) return;
+    try {
+      console.warn('[srbTranslit] Missing host permission for', base, '— notifying user');
+    } catch (_) {}
+    await browser.notifications.create(`srbtranslit-missing-${base}`, {
+      type: 'basic',
+      iconUrl: 'is-on.png',
+      title: 'srbTranslit needs permission',
+      message: `Click the srbTranslit toolbar icon to grant access to ${base} so it can auto-transliterate.`
+    });
+  } catch (_) {
+    // ignore
+  }
+}
+
+// Cleanup: remove stale notification throttle entries for domains that already have permission.
+async function cleanupNotifiedForGranted() {
+  try {
+    const { notifiedMissingPermission = {} } = await browser.storage.local.get('notifiedMissingPermission');
+    let changed = false;
+    for (const base of Object.keys(notifiedMissingPermission)) {
+      const hasPerm = await hasOrigins(originPatternsForBase(base));
+      if (hasPerm) {
+        delete notifiedMissingPermission[base];
+        changed = true;
+      }
+    }
+    if (changed) {
+      await browser.storage.local.set({ notifiedMissingPermission });
+    }
+  } catch (_) {
+    // ignore
+  }
 }
 
 // Storage shape (v2): { [rootDomain: string]: { direction: 'lat_to_cyr' | 'cyr_to_lat' } }
@@ -63,11 +189,36 @@ async function findRuleForUrl(url) {
   return null;
 }
 
-async function upsertRuleForTab(tab, desiredDirection) {
+// If a saved rule uses a broader base (e.g., gov.rs) but the desired
+// registrable domain is more specific (e.g., apr.gov.rs), migrate the rule
+// key so that permission checks align with what we request from the user.
+async function migrateRuleKeyIfNeeded(url) {
+  const host = getHostname(url);
+  const desired = registrableDomain(host);
+  if (!host || !desired) return null;
+  const match = await findRuleForUrl(url);
+  if (!match) return null;
+  if (match.key === desired) return match; // already aligned
+  const map = await getEnabledMap();
+  map[desired] = match.rule; // copy
+  delete map[match.key]; // remove old key
+  await setEnabledMap(map);
+  try { console.log('[srbTranslit] Migrated rule key', match.key, '->', desired); } catch (_) {}
+  return {key: desired, rule: match.rule};
+}
+
+async function upsertRuleForTab(tab, desiredDirection, {requirePermission = false} = {}) {
   if (!tab || !tab.url) return;
   const host = getHostname(tab.url);
-  const base = rootFor(host);
+  const base = registrableDomain(host);
   if (!base) return;
+  if (requirePermission) {
+    const granted = await ensurePermissionForBase(base, true);
+    if (!granted) {
+      await notifyMissingPermission(base);
+      return;
+    }
+  }
   const map = await getEnabledMap();
   map[base] = {direction: desiredDirection || (map[base]?.direction || 'lat_to_cyr')};
   await setEnabledMap(map);
@@ -80,7 +231,7 @@ async function upsertRuleForTab(tab, desiredDirection) {
 async function removeRuleForTab(tab) {
   if (!tab || !tab.url) return;
   const host = getHostname(tab.url);
-  const base = rootFor(host);
+  const base = registrableDomain(host);
   if (!base) return;
   const map = await getEnabledMap();
   delete map[base];
@@ -93,11 +244,36 @@ async function removeRuleForTab(tab) {
 
 async function updateActionIconForTab(tabId, url) {
   try {
-    const match = await findRuleForUrl(url);
+    const match = await migrateRuleKeyIfNeeded(url) || await findRuleForUrl(url);
     const enabled = !!match;
     const dir = match?.rule?.direction || 'lat_to_cyr';
     await browser.action.setIcon({tabId, path: enabled ? 'is-on.png' : 'is-off.png'});
-    const title = enabled ? `srbTranslit: enabled (${dir === 'lat_to_cyr' ? 'to Latin' : 'to Cyrillic'}) for this domain (incl. subdomains)` : 'srbTranslit: click to enable on this domain (incl. subdomains)';
+    let title = enabled ? `srbTranslit: enabled (${dir === 'lat_to_cyr' ? 'to Latin' : 'to Cyrillic'}) for this domain (incl. subdomains)` : 'srbTranslit: click to enable on this domain (incl. subdomains)';
+    if (enabled) {
+      const host = getHostname(url || '');
+      const base = registrableDomain(host);
+      const hasPerm = await hasOrigins(originPatternsForBase(base));
+      if (!hasPerm) {
+        title = `srbTranslit: needs permission to access ${base}. Click the icon to grant.`;
+        try {
+          await browser.action.setBadgeText({tabId, text: '!'});
+          await browser.action.setBadgeBackgroundColor({tabId, color: '#d0021b'});
+        } catch (_) {}
+        await notifyMissingPermission(base);
+      } else {
+        try { await browser.action.setBadgeText({tabId, text: ''}); } catch (_) {}
+        // Clear stale notification throttle once permission is present
+        try {
+          const { notifiedMissingPermission = {} } = await browser.storage.local.get('notifiedMissingPermission');
+          if (notifiedMissingPermission[base]) {
+            delete notifiedMissingPermission[base];
+            await browser.storage.local.set({ notifiedMissingPermission });
+          }
+        } catch (_) {}
+      }
+    } else {
+      try { await browser.action.setBadgeText({tabId, text: ''}); } catch (_) {}
+    }
     await browser.action.setTitle({tabId, title});
   } catch (e) {
     // ignore
@@ -161,6 +337,14 @@ browser.contextMenus.onClicked.addListener((info, tab) => {
       break;
     case "always-enable-domain-lat":
       (async () => {
+        const host = getHostname(tab?.url || '');
+        const base = registrableDomain(host);
+        if (!base) return;
+        const granted = await ensurePermissionForBase(base, true);
+        if (!granted) {
+          await notifyMissingPermission(base);
+          return;
+        }
         await upsertRuleForTab(tab, 'lat_to_cyr');
         await updateActionIconForTab(tab.id, tab.url);
         await execute(tab, 'lat_to_cyr');
@@ -168,6 +352,14 @@ browser.contextMenus.onClicked.addListener((info, tab) => {
       break;
     case "always-enable-domain-cyr":
       (async () => {
+        const host = getHostname(tab?.url || '');
+        const base = registrableDomain(host);
+        if (!base) return;
+        const granted = await ensurePermissionForBase(base, true);
+        if (!granted) {
+          await notifyMissingPermission(base);
+          return;
+        }
         await upsertRuleForTab(tab, 'cyr_to_lat');
         await updateActionIconForTab(tab.id, tab.url);
         await execute(tab, 'cyr_to_lat');
@@ -217,16 +409,35 @@ browser.contextMenus.onShown.addListener(async (info, tab) => {
 browser.action.onClicked.addListener(async (tab) => {
   if (!tab || !tab.url) return;
   const host = getHostname(tab.url);
-  const base = rootFor(host);
+  const base = registrableDomain(host);
   if (!base) return;
 
   const match = await findRuleForUrl(tab.url);
   if (match) {
-    await removeRuleForTab(tab);
+    // If enabled but permission is missing, use the click as a user gesture to request it
+    const hasPerm = await hasOrigins(originPatternsForBase(base));
+    if (!hasPerm) {
+      const granted = await ensurePermissionForBase(base, true);
+      if (granted) {
+        // Run immediately now that permission is present
+        await execute(tab, match.rule.direction || 'lat_to_cyr');
+      } else {
+        await notifyMissingPermission(base);
+      }
+    } else {
+      // Toggle off if already permitted
+      await removeRuleForTab(tab);
+    }
   } else {
-    await upsertRuleForTab(tab, 'lat_to_cyr'); // default direction when toggling via icon
-    // Immediately transliterate current page when enabling
-    await execute(tab, 'lat_to_cyr');
+    const granted = await ensurePermissionForBase(base, true);
+    if (!granted) {
+      await notifyMissingPermission(base);
+      await updateActionIconForTab(tab.id, tab.url);
+    } else {
+      await upsertRuleForTab(tab, 'lat_to_cyr'); // default direction when toggling via icon
+      // Immediately transliterate current page when enabling
+      await execute(tab, 'lat_to_cyr');
+    }
   }
 
   await updateActionIconForTab(tab.id, tab.url);
@@ -240,9 +451,18 @@ async function maybeAutoTransliterate(details) {
     console.debug('[srbTranslit] Nav event', details.transitionType || details.reason || 'unknown', 'url:', url);
   } catch (_) {
   }
-  const match = await findRuleForUrl(url);
+  const match = await migrateRuleKeyIfNeeded(url) || await findRuleForUrl(url);
   if (match) {
     try {
+      const host = getHostname(url || '');
+      const base = registrableDomain(host);
+      const hasPerm = await hasOrigins(originPatternsForBase(base));
+      try { console.debug('[srbTranslit] Auto-check', {base, matchKey: match.key, hasPerm}); } catch (_) {}
+      if (!hasPerm) {
+        try { console.warn('[srbTranslit] Skipping auto-run: missing permission for', base); } catch (_) {}
+        await notifyMissingPermission(base);
+        return;
+      }
       await execute({id: details.tabId}, match.rule.direction || 'lat_to_cyr');
       try {
         console.log('[srbTranslit] Auto-applied on', url, 'direction:', match.rule.direction || 'lat_to_cyr');
@@ -273,9 +493,18 @@ browser.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   }
   // Additionally, try to auto-apply when the tab finishes loading.
   if (changeInfo.status === 'complete' && currentUrl) {
-    const match = await findRuleForUrl(currentUrl);
+    const match = await migrateRuleKeyIfNeeded(currentUrl) || await findRuleForUrl(currentUrl);
     if (match) {
       try {
+        const host = getHostname(currentUrl || '');
+        const base = registrableDomain(host);
+        const hasPerm = await hasOrigins(originPatternsForBase(base));
+        try { console.debug('[srbTranslit] Auto-check (onUpdated)', {base, matchKey: match.key, hasPerm}); } catch (_) {}
+        if (!hasPerm) {
+          try { console.warn('[srbTranslit] Skipping auto-run (onUpdated): missing permission for', base); } catch (_) {}
+          await notifyMissingPermission(base);
+          return;
+        }
         await execute({id: tabId}, match.rule.direction || 'lat_to_cyr');
         try {
           console.log('[srbTranslit] Auto-applied (tabs.onUpdated complete) on', currentUrl, 'direction:', match.rule.direction || 'lat_to_cyr');
@@ -295,4 +524,70 @@ browser.tabs.onActivated.addListener(async ({tabId}) => {
   } catch (e) {
     // ignore
   }
+});
+
+// --- Messaging for popup UI ---
+async function getActiveTab() {
+  const tabs = await browser.tabs.query({active: true, currentWindow: true});
+  return tabs && tabs[0];
+}
+
+browser.runtime.onMessage.addListener((message, sender) => {
+  const doAsync = async () => {
+    const tab = await getActiveTab();
+    const url = tab?.url || '';
+    const host = getHostname(url);
+    const base = registrableDomain(host);
+    switch (message?.type) {
+      case 'srb:getState': {
+        const ruleMatch = url ? await findRuleForUrl(url) : null;
+        const rule = ruleMatch?.rule || null;
+        const hasPerm = base ? await hasOrigins(originPatternsForBase(base)) : false;
+        return {
+          url,
+          domain: base || host || '',
+          host: host || '',
+          hasPermission: !!hasPerm,
+          ruleDirection: rule?.direction || null,
+          hasRule: !!ruleMatch,
+          canAuto: !!ruleMatch && !!hasPerm,
+        };
+      }
+      case 'srb:grantPermission': {
+        if (!base) return {ok: false};
+        const ok = await ensurePermissionForBase(base, true);
+        if (ok) await updateActionIconForTab(tab.id, url);
+        return {ok};
+      }
+      case 'srb:setRule': {
+        const direction = message?.direction === 'cyr_to_lat' ? 'cyr_to_lat' : 'lat_to_cyr';
+        if (!tab || !base) return {ok: false};
+        // Save the rule regardless of permission; UI and auto-run will handle missing permission gracefully.
+        await upsertRuleForTab(tab, direction);
+        await updateActionIconForTab(tab.id, url);
+        if (message?.run) {
+          const hasPerm = await hasOrigins(originPatternsForBase(base));
+          if (hasPerm) {
+            await execute(tab, direction);
+          }
+        }
+        return {ok: true};
+      }
+      case 'srb:removeRule': {
+        if (!tab) return {ok: false};
+        await removeRuleForTab(tab);
+        await updateActionIconForTab(tab.id, url);
+        return {ok: true};
+      }
+      case 'srb:runOnce': {
+        const direction = message?.direction === 'cyr_to_lat' ? 'cyr_to_lat' : 'lat_to_cyr';
+        if (!tab) return {ok: false};
+        await execute(tab, direction);
+        return {ok: true};
+      }
+      default:
+        return {ok: false, error: 'unknown_message'};
+    }
+  };
+  return doAsync();
 });
