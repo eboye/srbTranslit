@@ -1,6 +1,14 @@
 /*global browser, console*/
 
-// --- Helpers for executing scripts and managing domain state ---
+/**
+ * Execute a content script for transliteration in a given tab.
+ * The content script is chosen based on the given direction:
+ *  - 'cyr_to_lat' for srbtranslit.js (Cyrillic → Latin)
+ *  - 'lat_to_cyr' for srbtranslitToCyr.js (Latin → Cyrillic)
+ *
+ * @param {Object} tab - A tab object from browser.tabs API
+ * @param {String} direction - The direction of transliteration as 'cyr_to_lat' or 'lat_to_cyr'
+ */
 async function execute(tab, direction) {
   // Map directions to the correct content script:
   //  - 'cyr_to_lat' should use srbtranslit.js (Cyrillic → Latin)
@@ -19,6 +27,13 @@ async function execute(tab, direction) {
   }
 }
 
+/**
+ * Given a URL string, extract the hostname.
+ * If the URL is not parseable, return null.
+ *
+ * @param {String} url - The URL string
+ * @return {String|null} The extracted hostname, or null if the URL is malformed
+ */
 function getHostname(url) {
   try {
     const u = new URL(url);
@@ -28,8 +43,14 @@ function getHostname(url) {
   }
 }
 
-// Best-effort registrable domain (eTLD+1) extractor.
-// Note: Not a full PSL, but handles common 2-level public suffixes like gov.rs, ac.rs, co.uk, etc.
+/**
+ * Given a hostname, extract the most relevant domain part that
+ * should be registered in the browser's permissions.
+ * If the hostname is not parseable, return null.
+ *
+ * @param {String} hostname - The hostname string
+ * @return {String|null} The extracted registrable domain, or null if the hostname is malformed
+ */
 function registrableDomain(hostname) {
   if (!hostname) return null;
   const parts = hostname.split('.');
@@ -45,7 +66,15 @@ function registrableDomain(hostname) {
   return parts.slice(-2).join('.');
 }
 
-// --- Dynamic host permissions helpers ---
+/**
+ * Given a registrable domain, return a list of origin patterns
+ * that will be passed to the browser.permissions API.
+ *
+ * @param {String} base - The registrable domain as a string
+ * @return {Array<String>} A list of origin patterns that will be
+ *  passed to the browser.permissions API. If the input base is
+ *  falsy, an empty list is returned.
+ */
 function originPatternsForBase(base) {
   if (!base) return [];
   return [
@@ -54,11 +83,19 @@ function originPatternsForBase(base) {
   ];
 }
 
-// Returns true if ANY of the provided origins is granted (logical OR).
+/**
+ * Check if the extension has been granted any of the given origins
+ * in the browser's permissions.
+ *
+ * @param {Array<String>} origins - List of origin patterns to check.
+ * @return {Promise<Boolean>} A promise resolving to true if the extension
+ *  has been granted any of the origins, false if not. If an error occurs,
+ *  the promise is rejected or resolved to false.
+ */
 async function hasOrigins(origins) {
   try {
     for (const o of origins) {
-      const ok = await browser.permissions.contains({origins: [o]});
+      const ok = browser.permissions.contains({origins: [o]});
       if (ok) return true;
     }
     return false;
@@ -67,6 +104,15 @@ async function hasOrigins(origins) {
   }
 }
 
+/**
+ * Request the given origins from the user directly. If the user grants
+ * any of the origins, the promise resolves to true. If the user denies
+ * the request or an error occurs, the promise resolves to false.
+ *
+ * @param {Array<String>} origins - List of origin patterns to request.
+ * @return {Promise<Boolean>} A promise resolving to true if any of the
+ *  origins are granted, false if not.
+ */
 async function requestOriginsFromUser(origins) {
   try {
     return await browser.permissions.request({origins});
@@ -75,6 +121,17 @@ async function requestOriginsFromUser(origins) {
   }
 }
 
+/**
+ * Ensure that the extension has been granted the given origin patterns for the
+ * given domain. If the extension does not have the permission, request it from
+ * the user if allowed by the given boolean flag.
+ *
+ * @param {String} baseDomain - The domain to check for permission.
+ * @param {Boolean} canPrompt - True if it is allowed to request permission
+ *  from the user, false if not.
+ * @return {Promise<Boolean>} A promise resolving to true if the extension has
+ *  been granted the permission, false if not.
+ */
 async function ensurePermissionForBase(baseDomain, canPrompt) {
   const origins = originPatternsForBase(baseDomain);
   const has = await hasOrigins(origins);
@@ -97,7 +154,15 @@ async function ensurePermissionForBase(baseDomain, canPrompt) {
   return granted;
 }
 
-// --- User notification helpers (throttled per domain) ---
+/**
+ * Check if a notification about missing permission for the given domain
+ * should be shown. The notification is throttled to once per 6 hours per
+ * base domain.
+ *
+ * @param {String} base - The base domain to check
+ * @return {Promise<Boolean>} A promise resolving to true if the notification
+ *  should be shown, false if not.
+ */
 async function shouldNotifyForBase(base) {
   try {
     // If permission is already present, do not notify and clear stale throttle
@@ -128,6 +193,17 @@ async function shouldNotifyForBase(base) {
   }
 }
 
+/**
+ * Notifies the user that a permission is missing for the given domain.
+ *
+ * The notification is throttled to once per 6 hours per base domain.
+ * If the notification is shown, it will appear as a browser notification
+ * with a button to grant permission.
+ *
+ * @param {String} base - The base domain for which permission is missing
+ * @return {Promise<void>} A promise resolving when the notification
+ *  has been shown or throttled.
+ */
 async function notifyMissingPermission(base) {
   try {
     const ok = await shouldNotifyForBase(base);
@@ -147,7 +223,14 @@ async function notifyMissingPermission(base) {
   }
 }
 
-// Cleanup: remove stale notification throttle entries for domains that already have permission.
+/**
+ * Periodically cleans up any throttle records for domains which have been
+ * granted permission in the meantime.
+ *
+ * This is a no-op if the storage area is not accessible.
+ *
+ * @return {Promise<void>} A promise resolving when the cleanup is complete.
+ */
 async function cleanupNotifiedForGranted() {
   try {
     const {notifiedMissingPermission = {}} = await browser.storage.local.get('notifiedMissingPermission');
@@ -167,7 +250,17 @@ async function cleanupNotifiedForGranted() {
   }
 }
 
-// Storage shape (v2): { [rootDomain: string]: { direction: 'lat_to_cyr' | 'cyr_to_lat' } }
+/**
+ * Retrieves the map of enabled domains to their transliteration directions.
+ *
+ * The storage schema changed from an array of strings to a map of
+ * strings to objects with a `direction` key. This function migrates
+ * legacy data from the array form to the map form.
+ *
+ * @return {Promise<object>} A promise resolving to the map of enabled
+ *  domains to their transliteration directions. The map is empty if
+ *  no enabled domains are present.
+ */
 async function getEnabledMap() {
   const {enabledDomains} = await browser.storage.local.get('enabledDomains');
   // Migrate legacy array form to map
@@ -180,6 +273,14 @@ async function getEnabledMap() {
   return enabledDomains || {};
 }
 
+/**
+ * Sets the map of enabled domains to their transliteration directions.
+ *
+ * @param {{[domain: string]: {direction: ('lat_to_cyr'|'cyr_to_lat')}}} map
+ *  The map of enabled domains to their transliteration directions.
+ *  The keys are domains and values are objects with a `direction` field.
+ * @returns {Promise<void>} Resolves when stored in local storage.
+ */
 async function setEnabledMap(map) {
   await browser.storage.local.set({enabledDomains: map});
 }
@@ -196,9 +297,22 @@ async function findRuleForUrl(url) {
   return null;
 }
 
-// If a saved rule uses a broader base (e.g., gov.rs) but the desired
-// registrable domain is more specific (e.g., apr.gov.rs), migrate the rule
-// key so that permission checks align with what we request from the user.
+/**
+ * If the given URL has a rule associated with it, this function migrates
+ * the rule from the old key to the new key derived from the registrable
+ * domain of the URL. The new key is the registrable domain of the URL,
+ * and the old key is the key currently associated with the rule.
+ *
+ * This function is needed because the old key is not always the same as
+ * the new key. For example, the old key might be "example.com" while the
+ * new key is "subdomain.example.com".
+ *
+ * This function returns the new key and the associated rule if the rule
+ * was migrated, or null if there was no rule associated with the given URL.
+ *
+ * @param {string} url The URL for which to migrate the rule.
+ * @return {Promise<{key: string, rule: {direction: 'lat_to_cyr'|'cyr_to_lat'}}> | null} The promise resolves to the new key and the associated rule if the rule was migrated, or null if there was no rule associated with the given URL.
+ */
 async function migrateRuleKeyIfNeeded(url) {
   const host = getHostname(url);
   const desired = registrableDomain(host);
@@ -217,6 +331,21 @@ async function migrateRuleKeyIfNeeded(url) {
   return {key: desired, rule: match.rule};
 }
 
+/**
+ * Upserts a transliteration rule for the given tab.
+ *
+ * If the given `desiredDirection` is truthy, it sets the transliteration
+ * direction to that value. Otherwise, it defaults to 'lat_to_cyr'.
+ *
+ * If `requirePermission` is truthy, this function will request permission
+ * for the given host if it is not already present. If permission is denied,
+ * it will notify the user with a notification.
+ *
+ * @param {Object} tab - A tab object from browser.tabs API
+ * @param {string} [desiredDirection] - The desired transliteration direction
+ * @param {{requirePermission: boolean}} [options] - Options controlling behavior
+ * @return {Promise<void>} Resolves when the rule has been upserted.
+ */
 async function upsertRuleForTab(tab, desiredDirection, {requirePermission = false} = {}) {
   if (!tab || !tab.url) return;
   const host = getHostname(tab.url);
@@ -238,6 +367,16 @@ async function upsertRuleForTab(tab, desiredDirection, {requirePermission = fals
   }
 }
 
+/**
+ * Removes a transliteration rule for the given tab.
+ *
+ * This function removes the rule currently associated with the given tab
+ * by deleting the entry in the enabled map that corresponds to the
+ * registrable domain of the tab's URL.
+ *
+ * @param {Object} tab - A tab object from browser.tabs API
+ * @return {Promise<void>} Resolves when the rule has been removed.
+ */
 async function removeRuleForTab(tab) {
   if (!tab || !tab.url) return;
   const host = getHostname(tab.url);
@@ -252,6 +391,26 @@ async function removeRuleForTab(tab) {
   }
 }
 
+/**
+ * Updates the icon and title of the browser action for the given tab.
+ *
+ * This function updates the icon to either the enabled or disabled image
+ * based on whether a rule is associated with the given tab. It also sets
+ * the title of the action to a string that indicates whether the rule is
+ * enabled for the domain of the tab's URL, and if so, the direction of
+ * transliteration.
+ *
+ * If the rule is enabled, this function also checks whether the host of
+ * the tab's URL has permission to access the domain. If permission is
+ * missing, it requests permission and sets a badge on the action to
+ * indicate to the user that permission is needed. If permission is denied,
+ * it displays a notification with instructions on how to whitelist the
+ * domain.
+ *
+ * @param {number} tabId - The ID of the tab to update
+ * @param {string} url - The URL of the tab to update
+ * @returns {Promise<void>} Resolves when the action has been updated.
+ */
 async function updateActionIconForTab(tabId, url) {
   try {
     const match = await migrateRuleKeyIfNeeded(url) || await findRuleForUrl(url);

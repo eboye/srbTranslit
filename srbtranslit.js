@@ -112,6 +112,12 @@ let replace = {
   },
   allElements;
 
+/**
+ * Replace Cyrillic characters in a given word with their Latin
+ * equivalents.
+ * @param {string} word - The word to transliterate.
+ * @return {string} The transliterated word.
+ */
 function transliterate(word) {
   'use strict';
   return word.split('').map(function (char) {
@@ -119,12 +125,22 @@ function transliterate(word) {
   }).join('');
 }
 
+/**
+ * Iterate over a given text node and transliterate its value if it has one.
+ * @param {Node} text - The text node to transliterate.
+ * @return {undefined}
+ */
 function iterator(text) {
   if (text.nodeValue && text.nodeValue.trim() !== '') {
     text.nodeValue = transliterate(text.nodeValue);
   }
 }
 
+/**
+ * Perform Latin-Cyrillic transliteration on all suitable text nodes in a
+ * given document.
+ * @return {undefined}
+ */
 function srbTranslit() {
   'use strict';
   let x,
