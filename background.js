@@ -83,14 +83,16 @@ async function ensurePermissionForBase(baseDomain, canPrompt) {
   const granted = await requestOriginsFromUser(origins);
   try {
     console.debug('[srbTranslit] permissions.request', baseDomain, '=>', granted);
-  } catch (_) {}
+  } catch (_) {
+  }
   if (granted) {
     // Clear any stale notification throttle for this base so future missing notices (if any) are timely
     try {
-      const { notifiedMissingPermission = {} } = await browser.storage.local.get('notifiedMissingPermission');
+      const {notifiedMissingPermission = {}} = await browser.storage.local.get('notifiedMissingPermission');
       delete notifiedMissingPermission[baseDomain];
-      await browser.storage.local.set({ notifiedMissingPermission });
-    } catch (_) {}
+      await browser.storage.local.set({notifiedMissingPermission});
+    } catch (_) {
+    }
   }
   return granted;
 }
@@ -102,12 +104,13 @@ async function shouldNotifyForBase(base) {
     const hasPerm = await hasOrigins(originPatternsForBase(base));
     if (hasPerm) {
       try {
-        const { notifiedMissingPermission = {} } = await browser.storage.local.get('notifiedMissingPermission');
+        const {notifiedMissingPermission = {}} = await browser.storage.local.get('notifiedMissingPermission');
         if (notifiedMissingPermission[base]) {
           delete notifiedMissingPermission[base];
-          await browser.storage.local.set({ notifiedMissingPermission });
+          await browser.storage.local.set({notifiedMissingPermission});
         }
-      } catch (_) {}
+      } catch (_) {
+      }
       return false;
     }
     const {notifiedMissingPermission = {}} = await browser.storage.local.get('notifiedMissingPermission');
@@ -131,7 +134,8 @@ async function notifyMissingPermission(base) {
     if (!ok) return;
     try {
       console.warn('[srbTranslit] Missing host permission for', base, '— notifying user');
-    } catch (_) {}
+    } catch (_) {
+    }
     await browser.notifications.create(`srbtranslit-missing-${base}`, {
       type: 'basic',
       iconUrl: 'is-on.png',
@@ -146,7 +150,7 @@ async function notifyMissingPermission(base) {
 // Cleanup: remove stale notification throttle entries for domains that already have permission.
 async function cleanupNotifiedForGranted() {
   try {
-    const { notifiedMissingPermission = {} } = await browser.storage.local.get('notifiedMissingPermission');
+    const {notifiedMissingPermission = {}} = await browser.storage.local.get('notifiedMissingPermission');
     let changed = false;
     for (const base of Object.keys(notifiedMissingPermission)) {
       const hasPerm = await hasOrigins(originPatternsForBase(base));
@@ -156,7 +160,7 @@ async function cleanupNotifiedForGranted() {
       }
     }
     if (changed) {
-      await browser.storage.local.set({ notifiedMissingPermission });
+      await browser.storage.local.set({notifiedMissingPermission});
     }
   } catch (_) {
     // ignore
@@ -206,7 +210,10 @@ async function migrateRuleKeyIfNeeded(url) {
   map[desired] = match.rule; // copy
   delete map[match.key]; // remove old key
   await setEnabledMap(map);
-  try { console.log('[srbTranslit] Migrated rule key', match.key, '->', desired); } catch (_) {}
+  try {
+    console.log('[srbTranslit] Migrated rule key', match.key, '->', desired);
+  } catch (_) {
+  }
   return {key: desired, rule: match.rule};
 }
 
@@ -261,21 +268,29 @@ async function updateActionIconForTab(tabId, url) {
         try {
           await browser.action.setBadgeText({tabId, text: '!'});
           await browser.action.setBadgeBackgroundColor({tabId, color: '#d0021b'});
-        } catch (_) {}
+        } catch (_) {
+        }
         await notifyMissingPermission(base);
       } else {
-        try { await browser.action.setBadgeText({tabId, text: ''}); } catch (_) {}
+        try {
+          await browser.action.setBadgeText({tabId, text: ''});
+        } catch (_) {
+        }
         // Clear stale notification throttle once permission is present
         try {
-          const { notifiedMissingPermission = {} } = await browser.storage.local.get('notifiedMissingPermission');
+          const {notifiedMissingPermission = {}} = await browser.storage.local.get('notifiedMissingPermission');
           if (notifiedMissingPermission[base]) {
             delete notifiedMissingPermission[base];
-            await browser.storage.local.set({ notifiedMissingPermission });
+            await browser.storage.local.set({notifiedMissingPermission});
           }
-        } catch (_) {}
+        } catch (_) {
+        }
       }
     } else {
-      try { await browser.action.setBadgeText({tabId, text: ''}); } catch (_) {}
+      try {
+        await browser.action.setBadgeText({tabId, text: ''});
+      } catch (_) {
+      }
     }
     await browser.action.setTitle({tabId, title});
   } catch (e) {
@@ -306,7 +321,7 @@ browser.contextMenus.create(
 browser.contextMenus.create(
   {
     id: "always-enable-domain-lat",
-    title: "Always transliterate to Latin on this domain",
+    title: "Uvek preslovi u latinicu na ovom domenu",
     contexts: ["page"],
   },
   () => void browser.runtime.lastError,
@@ -315,7 +330,7 @@ browser.contextMenus.create(
 browser.contextMenus.create(
   {
     id: "always-enable-domain-cyr",
-    title: "Always transliterate to Cyrillic on this domain (experimental)",
+    title: "Uvek preslovi u ćirilicu na ovom domenu (experimental)",
     contexts: ["page"],
   },
   () => void browser.runtime.lastError,
@@ -324,7 +339,7 @@ browser.contextMenus.create(
 browser.contextMenus.create(
   {
     id: "stop-auto-domain",
-    title: "Stop auto-transliteration on this domain",
+    title: "Zaustavi automatsko preslovljavanje na ovom domenu",
     contexts: ["page"],
   },
   () => void browser.runtime.lastError,
@@ -333,10 +348,12 @@ browser.contextMenus.create(
 browser.contextMenus.onClicked.addListener((info, tab) => {
   switch (info.menuItemId) {
     case "transliterate-to-lat":
-      execute(tab, 'lat_to_cyr').then(r => void browser.runtime.lastError);
+      // To Latin = Cyrillic → Latin
+      execute(tab, 'cyr_to_lat').then(r => void browser.runtime.lastError);
       break;
     case "transliterate-to-cyr":
-      execute(tab, 'cyr_to_lat').then(r => void browser.runtime.lastError);
+      // To Cyrillic = Latin → Cyrillic
+      execute(tab, 'lat_to_cyr').then(r => void browser.runtime.lastError);
       break;
     case "always-enable-domain-lat":
       (async () => {
@@ -348,9 +365,10 @@ browser.contextMenus.onClicked.addListener((info, tab) => {
           await notifyMissingPermission(base);
           return;
         }
-        await upsertRuleForTab(tab, 'lat_to_cyr');
+        // Always to Latin = Cyrillic → Latin
+        await upsertRuleForTab(tab, 'cyr_to_lat');
         await updateActionIconForTab(tab.id, tab.url);
-        await execute(tab, 'lat_to_cyr');
+        await execute(tab, 'cyr_to_lat');
       })();
       break;
     case "always-enable-domain-cyr":
@@ -363,9 +381,10 @@ browser.contextMenus.onClicked.addListener((info, tab) => {
           await notifyMissingPermission(base);
           return;
         }
-        await upsertRuleForTab(tab, 'cyr_to_lat');
+        // Always to Cyrillic = Latin → Cyrillic
+        await upsertRuleForTab(tab, 'lat_to_cyr');
         await updateActionIconForTab(tab.id, tab.url);
-        await execute(tab, 'cyr_to_lat');
+        await execute(tab, 'lat_to_cyr');
       })();
       break;
     case "stop-auto-domain":
@@ -387,15 +406,15 @@ browser.contextMenus.onShown.addListener(async (info, tab) => {
 
   try {
     await browser.contextMenus.update('always-enable-domain-lat', {
-      title: `Always transliterate to Latin on ${base || 'this domain'}`,
+      title: `Uvek preslovi u latinicu na ${base || 'ovom domenu'}`,
       enabled: !!base && (!enabled || dir !== 'lat_to_cyr')
     });
     await browser.contextMenus.update('always-enable-domain-cyr', {
-      title: `Always transliterate to Cyrillic on ${base || 'this domain'} (experimental)`,
+      title: `Uvek preslovi u ćirilicu na ${base || 'ovom domenu'} (experimental)`,
       enabled: !!base && (!enabled || dir !== 'cyr_to_lat')
     });
     await browser.contextMenus.update('stop-auto-domain', {
-      title: `Stop auto-transliteration on ${base || 'this domain'}`,
+      title: `Zaustavi automatsko preslovljavanje na ${base || 'ovom domenu'}`,
       enabled: enabled
     });
   } catch (e) {
@@ -460,9 +479,15 @@ async function maybeAutoTransliterate(details) {
       const host = getHostname(url || '');
       const base = registrableDomain(host);
       const hasPerm = await hasOrigins(originPatternsForBase(base));
-      try { console.debug('[srbTranslit] Auto-check', {base, matchKey: match.key, hasPerm}); } catch (_) {}
+      try {
+        console.debug('[srbTranslit] Auto-check', {base, matchKey: match.key, hasPerm});
+      } catch (_) {
+      }
       if (!hasPerm) {
-        try { console.warn('[srbTranslit] Skipping auto-run: missing permission for', base); } catch (_) {}
+        try {
+          console.warn('[srbTranslit] Skipping auto-run: missing permission for', base);
+        } catch (_) {
+        }
         await notifyMissingPermission(base);
         return;
       }
@@ -502,9 +527,15 @@ browser.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         const host = getHostname(currentUrl || '');
         const base = registrableDomain(host);
         const hasPerm = await hasOrigins(originPatternsForBase(base));
-        try { console.debug('[srbTranslit] Auto-check (onUpdated)', {base, matchKey: match.key, hasPerm}); } catch (_) {}
+        try {
+          console.debug('[srbTranslit] Auto-check (onUpdated)', {base, matchKey: match.key, hasPerm});
+        } catch (_) {
+        }
         if (!hasPerm) {
-          try { console.warn('[srbTranslit] Skipping auto-run (onUpdated): missing permission for', base); } catch (_) {}
+          try {
+            console.warn('[srbTranslit] Skipping auto-run (onUpdated): missing permission for', base);
+          } catch (_) {
+          }
           await notifyMissingPermission(base);
           return;
         }
