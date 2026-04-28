@@ -4,7 +4,7 @@
  * Returns an element from the popup with the given ID.
  *
  * @param {string} id The ID of the element to retrieve.
- * @return {Element} The element with the given ID, or null if not found.
+ * @return {HTMLElement} The element with the given ID.
  */
 function qs(id) {
   return document.getElementById(id);
@@ -22,40 +22,19 @@ async function send(type, payload) {
 }
 
 /**
- * Updates the status text in the popup.
- *
- * @param {string} text The new status text
- */
-function setStatus(text) {
-  qs('status').textContent = text;
-}
-
-/**
  * Updates the hint text in the popup.
  *
- * @param {string} text The new hint text, or `undefined` or an empty string
- * to clear the hint.
+ * @param {string} text The new hint text.
  */
 function setHint(text) {
   qs('hint').textContent = text || '';
-}
-
-
-/**
- * Retrieves the active tab in the current window.
- *
- * @return {object} The active tab.
- */
-async function getActiveTab() {
-  const tabs = await browser.tabs.query({active: true, currentWindow: true});
-  return tabs && tabs[0];
 }
 
 /**
  * Extracts the hostname from a given URL.
  *
  * @param {string} url The URL.
- * @return {string} The hostname or an empty string if the URL is invalid.
+ * @return {string} The hostname or an empty string.
  */
 function getHostname(url) {
   try {
@@ -66,12 +45,11 @@ function getHostname(url) {
 }
 
 /**
- * Given a host, returns the registrable domain, which is the last two labels if
- * the TLD is not a country code (length 2) or if the second level domain is not
- * on the list of known second level domains.
+ * Extract the registrable domain (e.g., example.com) from a host.
+ * Synchronized with background.js.
  *
- * @param {string} host The full host (e.g., example.com).
- * @return {string} The registrable domain (e.g., example.com).
+ * @param {string} host The full host.
+ * @return {string} The registrable domain.
  */
 function registrableDomain(host) {
   if (!host) return '';
@@ -79,19 +57,16 @@ function registrableDomain(host) {
   if (parts.length <= 2) return host;
   const tld = parts[parts.length - 1];
   const sld = parts[parts.length - 2];
-  const known = new Set(['co', 'com', 'net', 'org', 'gov', 'edu', 'ac']);
+  const known = new Set(['co', 'com', 'net', 'org', 'gov', 'edu', 'ac', 'in', 'rs']);
   if (tld.length === 2 && known.has(sld)) return parts.slice(-3).join('.');
   return parts.slice(-2).join('.');
 }
 
 /**
- * Given a registrable domain, returns an array of two strings representing the
- * host patterns that would match it (e.g., for "example.com", returns
- * ["*://example.com/*", "*://*.example.com/*"]).
+ * Given a registrable domain, returns origin patterns.
  *
- * @param {string} base The registrable domain (e.g., "example.com").
- * @return {string[]} An array of two strings, or an empty array if the input
- *     is invalid.
+ * @param {string} base The registrable domain.
+ * @return {string[]} An array of origin patterns.
  */
 function originPatternsForBase(base) {
   if (!base) return [];
@@ -99,138 +74,90 @@ function originPatternsForBase(base) {
 }
 
 /**
- * Refresh the popup state based on the current tab's domain and permission
- * state. Called on popup show and after each user interaction.
- *
- * This function updates the popup with the current domain, whether the domain
- * has the permission, whether there is a rule for this domain, and based on that
- * sets the status and hint text. It also updates the state of the buttons.
+ * Refresh the popup state.
  */
 async function refresh() {
   const state = await send('srb:getState');
-  const {domain, host, hasPermission, ruleDirection, hasRule, canAuto} = state;
-  qs('domain').textContent = domain || host || 'unknown';
-  qs('direction').value = ruleDirection || 'lat_to_cyr';
+  if (!state) return;
+  
+  const {domain, hasPermission, ruleDirection, hasRule} = state;
+  qs('domain').textContent = domain || 'unknown';
+  if (ruleDirection) {
+    qs('direction').value = ruleDirection;
+  }
 
   if (hasRule) {
     if (hasPermission) {
-      setStatus('Omogućeno · Date dozvole');
-      setHint('Ovaj domen će automatski biti translitovan prilikom navigacije.');
+      qs('status').textContent = 'Omogućeno · Date dozvole';
+      setHint('Automatsko preslovljavanje je aktivno. Koristi Alt+Shift+T da promeniš ili isključiš.');
     } else {
-      setStatus('Omogućeno · Nedostaju dozvole');
+      qs('status').textContent = 'Omogućeno · Nedostaju dozvole';
       setHint('Klikni "Daj dozvolu" da dozvoliš automatsko translitovanje.');
     }
   } else {
     if (hasPermission) {
-      setStatus('Data dozvola · Nije omogućeno');
-      setHint('Klikni "Uključi uvek" da zapamtiš domen.');
+      qs('status').textContent = 'Data dozvola · Nije omogućeno';
+      setHint('Klikni "Uključi uvek" (Alt+Shift+T) da zapamtiš domen.');
     } else {
-      setStatus('Nije omogućeno · Nedostaju dozvole');
-      setHint('Možeš pokrenuti jednom ili dati dozvole da omogućiš.');
+      qs('status').textContent = 'Nije omogućeno · Nedostaju dozvole';
+      setHint('Pokreni jednom (Alt+Shift+L/C) ili daj dozvole za stalno.');
     }
   }
 
   // Buttons state
   qs('grant').disabled = !!hasPermission;
-  qs('enable').disabled = !!hasRule && !!hasPermission; // if rule+perm already set
+  qs('enable').disabled = !!hasRule && !!hasPermission;
   qs('disable').disabled = !hasRule;
-  qs('runOnce').disabled = false;
 }
 
 /**
- * Request permission for the current tab's domain directly from the popup.
- * This is needed to preserve the user gesture so that the permission request
- * is not blocked by the browser.
- *
- * The permission request is first attempted with the full set of origins
- * (wildcard subdomains and exact), then with wildcard subdomains only, and
- * finally with exact only. This allows the user to grant permission for a
- * subset of subdomains if they prefer.
- *
- * After the permission request is complete, the popup's state is refreshed.
+ * Request permission for the current domain.
  */
 async function onGrant() {
-  // Request permission directly from the popup to preserve user gesture
-  const tab = await getActiveTab();
-  const host = getHostname(tab?.url || '');
-  const base = registrableDomain(host);
+  const state = await send('srb:getState');
+  const base = registrableDomain(getHostname(state.url));
   const origins = originPatternsForBase(base);
   try {
-    let ok = await browser.permissions.request({origins});
-    if (!ok) {
-      // Retry strategies: wildcard subdomains only, then exact only
-      const wild = [`*://*.${base}/*`];
-      const exact = [`*://${base}/*`];
-      ok = await browser.permissions.request({origins: wild});
-      if (!ok) ok = await browser.permissions.request({origins: exact});
-    }
-    if (!ok) {
-      setHint(`Zahtev za dozvolama nije odobren za ${base}.`);
+    const ok = await browser.permissions.request({origins});
+    if (ok) {
+      setHint(`Dozvola odobrena za ${base}.`);
     } else {
-      const has = browser.permissions.contains({origins});
-      setHint(has ? `Dozvola omogućena za ${base}.` : `Dozvola (delimično) omogućena za ${base}.`);
+      setHint(`Dozvola nije odobrena za ${base}.`);
     }
   } catch (e) {
-    setHint('Zahtev za dozvolama nije uspeo.');
+    setHint('Greška pri zahtevu za dozvolu.');
   }
   await refresh();
 }
 
 /**
- * Request permission for the given domain (if not already present) and then
- * set a rule for the given domain with the given direction.
- *
- * If permission is not present, request it now as part of the same user
- * gesture. If permission is denied, display a hint to the user how to
- * whitelist the domain.
- *
- * @return {Promise<void>} Resolves when the rule has been set or permission
- * has been denied.
+ * Enable persistent transliteration for the current domain.
  */
 async function onEnable() {
   const direction = qs('direction').value;
-  // Ensure permission is present; if not, request now as part of the same user gesture.
-  const tab = await getActiveTab();
-  const host = getHostname(tab?.url || '');
-  const base = registrableDomain(host);
-  const origins = originPatternsForBase(base);
-  let has = false;
-  try {
-    // Check OR across origins
-    const exact = browser.permissions.contains({origins: [`*://${base}/*`]});
-    const wild = browser.permissions.contains({origins: [`*://*.${base}/*`]});
-    has = exact || wild;
-  } catch {
-  }
-  if (!has) {
+  const state = await send('srb:getState');
+  const base = registrableDomain(getHostname(state.url));
+  
+  if (!state.hasPermission) {
+    const origins = originPatternsForBase(base);
     try {
-      let ok = await browser.permissions.request({origins});
+      const ok = await browser.permissions.request({origins});
       if (!ok) {
-        const wildOnly = [`*://*.${base}/*`];
-        const exactOnly = [`*://${base}/*`];
-        ok = await browser.permissions.request({origins: wildOnly});
-        if (!ok) ok = await browser.permissions.request({origins: exactOnly});
-      }
-      if (!ok) {
-        setHint(`Zahtev za dozvolama nije omogućen za ${base}. Ako Firefox pristup sajtovima je namešten na "Nakon klika", otvori Add-ons (dodaci) i promeni Pristup sajtovima na "Na specifičnim sajtovima" (i ovaj domen) ili "Na svim sajtovima".`);
-        await refresh();
+        setHint('Morate dati dozvolu da bi automatsko preslovljavanje radilo.');
         return;
       }
     } catch (e) {
-      setHint('Zahtev za dozvolama nije uspeo.');
-      await refresh();
+      setHint('Greška pri zahtevu za dozvolu.');
       return;
     }
   }
-  const res = await send('srb:setRule', {direction, run: true});
-  if (!res || !res.ok) {
-    setHint('Nije moguće omogućiti. Budite sigurni da odobrite dozvole kada ste upitani.');
-  }
+  
+  await send('srb:setRule', {direction, run: true});
   await refresh();
 }
 
 /**
- * Removes the transliteration rule from the active tab.
+ * Disable persistent transliteration for the current domain.
  */
 async function onDisable() {
   await send('srb:removeRule');
@@ -238,10 +165,7 @@ async function onDisable() {
 }
 
 /**
- * Sends a one-time "run" message to the content script.
- *
- * @private
- * @async
+ * Run transliteration once on the current page.
  */
 async function onRunOnce() {
   const direction = qs('direction').value;
@@ -255,15 +179,10 @@ window.addEventListener('DOMContentLoaded', () => {
   qs('runOnce').addEventListener('click', onRunOnce);
   qs('openAddons').addEventListener('click', async () => {
     try {
-      // about:addons cannot be opened from extensions in some contexts -> may throw Illegal URL
       await browser.tabs.create({url: 'about:addons'});
     } catch (e) {
-      try {
-        await browser.runtime.openOptionsPage();
-      } catch (_) {
-      }
-      setHint('Nije moguće otvoriti Add-ons Menadžer. Otvorite ga ručno: Menu → Add-ons and themes (Ctrl+Shift+A), zatim podesite Pristup sajtovima za srbTranslit.');
+      await browser.runtime.openOptionsPage().catch(() => {});
     }
   });
-  refresh().then(r => console.log(r));
+  refresh();
 });

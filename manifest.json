@@ -6,7 +6,7 @@
     }
   },
   "name": "srbTranslit",
-  "version": "2.3",
+  "version": "2.4",
   "permissions": [
     "activeTab",
     "scripting",
@@ -28,6 +28,29 @@
   "optional_host_permissions": [],
   "icons": {
     "128": "is-on.png"
+  },
+  "commands": {
+    "toggle-transliteration": {
+      "suggested_key": {
+        "default": "Alt+Shift+T",
+        "mac": "MacCtrl+Shift+T"
+      },
+      "description": "Toggles transliteration for the current domain"
+    },
+    "run-to-latin": {
+      "suggested_key": {
+        "default": "Alt+Shift+L",
+        "mac": "MacCtrl+Shift+L"
+      },
+      "description": "Transliterate current page to Latin"
+    },
+    "run-to-cyrillic": {
+      "suggested_key": {
+        "default": "Alt+Shift+C",
+        "mac": "MacCtrl+Shift+C"
+      },
+      "description": "Transliterate current page to Cyrillic"
+    }
   },
   "action": {
     "default_icon": "is-on.png",
