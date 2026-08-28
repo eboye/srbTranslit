@@ -2,11 +2,14 @@
   "manifest_version": 3,
   "browser_specific_settings": {
     "gecko": {
-      "id": "srbTranslit@srbodroid.com"
+      "id": "srbTranslit@srbodroid.com",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
     }
   },
   "name": "srbTranslit",
-  "version": "2.4",
+  "version": "2.5",
   "permissions": [
     "activeTab",
     "scripting",

@@ -3,10 +3,16 @@
 (function () {
   'use strict';
 
+  if (window.__srbTranslitLatToCyrActive) return;
+  window.__srbTranslitLatToCyrActive = true;
+
   // 1) Multi-letter sequences (Case-aware)
+  // Note: bare 'dz' is intentionally NOT mapped to 'џ' — in standard Serbian
+  // orthography a d+z sequence stays two letters (e.g. "nadzor" -> "надзор",
+  // "podzemlje" -> "подземље"); only the dž digraph is the single-letter
+  // phoneme represented by 'џ'.
   const SEQ_MAP_LAT2CYR = {
-    'dž': 'џ', 'Dž': 'Џ', 'DŽ': 'Џ', 'dZ': 'џ',
-    'dz': 'џ', 'Dz': 'Џ', 'DZ': 'Џ', 'dZ': 'џ',
+    'dž': 'џ', 'Dž': 'Џ', 'DŽ': 'Џ', 'dŽ': 'џ',
     'nj': 'њ', 'Nj': 'Њ', 'NJ': 'Њ', 'nJ': 'њ',
     'lj': 'љ', 'Lj': 'Љ', 'LJ': 'Љ', 'lJ': 'љ',
     'dj': 'ђ', 'Dj': 'Ђ', 'DJ': 'Ђ', 'dJ': 'ђ'
@@ -24,6 +30,9 @@
 
   const SEQ_REGEX = new RegExp(Object.keys(SEQ_MAP_LAT2CYR).join('|'), 'g');
   const SINGLE_REGEX = new RegExp(Object.keys(SINGLE_MAP_LAT2CYR).join('|'), 'g');
+
+  // Skip scripts, styles, code blocks, and user-editable areas
+  const skipTags = ['script', 'style', 'noscript', 'textarea', 'code', 'pre', 'kbd', 'math'];
 
   /**
    * Linguistic exceptions where digraphs should NOT be merged.
@@ -91,13 +100,14 @@
    * Determines whether a node should be skipped during transliteration.
    */
   function shouldSkipNode(node) {
-    const p = node.parentNode;
-    if (!p) return false;
-    const tag = (p.nodeName || '').toLowerCase();
-    const skipTags = ['script', 'style', 'noscript', 'textarea', 'code', 'pre', 'kbd', 'math'];
-    if (skipTags.indexOf(tag) !== -1) return true;
-    if (p.isContentEditable) return true;
-    if (p.classList && (p.classList.contains('syntaxhighlighter') || p.classList.contains('notranslate'))) return true;
+    let p = node.parentNode;
+    while (p && p.nodeType === 1) {
+      const tag = (p.nodeName || '').toLowerCase();
+      if (skipTags.indexOf(tag) !== -1) return true;
+      if (p.isContentEditable) return true;
+      if (p.classList && (p.classList.contains('syntaxhighlighter') || p.classList.contains('notranslate'))) return true;
+      p = p.parentNode;
+    }
     return false;
   }
 
@@ -127,27 +137,38 @@
 
   // Handle dynamic content via MutationObserver
   let timeout = null;
+  const pendingElements = new Set();
+  const pendingTextNodes = new Set();
   const observer = new MutationObserver(function (mutations) {
-    const addedNodes = [];
     mutations.forEach(function (mutation) {
+      if (mutation.type === 'characterData') {
+        pendingTextNodes.add(mutation.target);
+        return;
+      }
       mutation.addedNodes.forEach(function (node) {
-        if (node.nodeType === 1 || node.nodeType === 3) {
-          addedNodes.push(node);
+        if (node.nodeType === 1) {
+          pendingElements.add(node);
+        } else if (node.nodeType === 3) {
+          pendingTextNodes.add(node);
         }
       });
     });
 
-    if (addedNodes.length > 0) {
+    if (pendingElements.size > 0 || pendingTextNodes.size > 0) {
       if (timeout) clearTimeout(timeout);
       timeout = setTimeout(function () {
-        addedNodes.forEach(function (node) {
-          if (node.nodeType === 3) {
-            if (!shouldSkipNode(node) && node.nodeValue && node.nodeValue.trim() !== '') {
-              node.nodeValue = transliterate(node.nodeValue);
-            }
-          } else {
-            srbTranslit(node);
+        const textNodes = Array.from(pendingTextNodes);
+        const elements = Array.from(pendingElements);
+        pendingTextNodes.clear();
+        pendingElements.clear();
+        textNodes.forEach(function (node) {
+          if (!shouldSkipNode(node) && node.nodeValue && node.nodeValue.trim() !== '') {
+            const newVal = transliterate(node.nodeValue);
+            if (newVal !== node.nodeValue) node.nodeValue = newVal;
           }
+        });
+        elements.forEach(function (node) {
+          srbTranslit(node);
         });
       }, 150);
     }
@@ -155,7 +176,8 @@
 
   observer.observe(document.body || document.documentElement, {
     childList: true,
-    subtree: true
+    subtree: true,
+    characterData: true
   });
 
 })();

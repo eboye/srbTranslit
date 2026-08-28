@@ -130,6 +130,7 @@ async function getEnabledMap() {
     // Migration from old array format
     const map = {};
     for (const d of enabledDomains) map[d] = {direction: 'lat_to_cyr'};
+    await setEnabledMap(map);
     return map;
   }
   return enabledDomains || {};
@@ -207,34 +208,6 @@ browser.contextMenus.onClicked.addListener(async (info, tab) => {
   } else if (info.menuItemId === "transliterate-to-cyr") {
     await execute(tab, 'lat_to_cyr');
   }
-});
-
-browser.action.onClicked.addListener(async (tab) => {
-  if (!tab || !tab.url) return;
-  const host = getHostname(tab.url);
-  const base = registrableDomain(host);
-  if (!base) return;
-
-  const match = await findRuleForUrl(tab.url);
-  if (match) {
-    const hasPerm = await hasOrigins(originPatternsForBase(base));
-    if (!hasPerm) {
-      const granted = await ensurePermissionForBase(base, true);
-      if (granted) await execute(tab, match.rule.direction);
-    } else {
-      // Toggle off
-      const map = await getEnabledMap();
-      delete map[base];
-      await setEnabledMap(map);
-    }
-  } else {
-    const granted = await ensurePermissionForBase(base, true);
-    const map = await getEnabledMap();
-    map[base] = {direction: 'lat_to_cyr'};
-    await setEnabledMap(map);
-    if (granted) await execute(tab, 'lat_to_cyr');
-  }
-  await updateActionIconForTab(tab.id, tab.url);
 });
 
 async function maybeAutoTransliterate(details) {

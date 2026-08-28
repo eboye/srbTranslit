@@ -3,6 +3,9 @@
 (function () {
   'use strict';
 
+  if (window.__srbTranslitCyrToLatActive) return;
+  window.__srbTranslitCyrToLatActive = true;
+
   const replaceMap = {
     "А": "A", "Б": "B", "В": "V", "Г": "G", "Д": "D", "Ђ": "Đ", "Е": "E", "Ж": "Ž", "З": "Z",
     "И": "I", "Ј": "J", "К": "K", "Л": "L", "Љ": "LJ", "М": "M", "Н": "N", "Њ": "NJ", "О": "O",
@@ -14,6 +17,9 @@
   };
 
   const regex = new RegExp(Object.keys(replaceMap).join('|'), 'g');
+
+  // Skip scripts, styles, code blocks, and user-editable areas
+  const skipTags = ['script', 'style', 'noscript', 'textarea', 'code', 'pre', 'kbd', 'math'];
 
   /**
    * Transliterates a string of text from Cyrillic to Latin.
@@ -33,15 +39,15 @@
    * @returns {boolean} True if the node should be skipped; false otherwise.
    */
   function shouldSkipNode(node) {
-    const p = node.parentNode;
-    if (!p) return false;
-    const tag = (p.nodeName || '').toLowerCase();
-    // Skip scripts, styles, code blocks, and user-editable areas
-    const skipTags = ['script', 'style', 'noscript', 'textarea', 'code', 'pre', 'kbd', 'math'];
-    if (skipTags.indexOf(tag) !== -1) return true;
-    if (p.isContentEditable) return true;
-    // Also check for common class names that indicate code or non-translatable content
-    if (p.classList && (p.classList.contains('syntaxhighlighter') || p.classList.contains('notranslate'))) return true;
+    let p = node.parentNode;
+    while (p && p.nodeType === 1) {
+      const tag = (p.nodeName || '').toLowerCase();
+      if (skipTags.indexOf(tag) !== -1) return true;
+      if (p.isContentEditable) return true;
+      // Also check for common class names that indicate code or non-translatable content
+      if (p.classList && (p.classList.contains('syntaxhighlighter') || p.classList.contains('notranslate'))) return true;
+      p = p.parentNode;
+    }
     return false;
   }
 
@@ -72,31 +78,39 @@
 
   // Handle dynamic content via MutationObserver
   let timeout = null;
+  const pendingElements = new Set();
+  const pendingTextNodes = new Set();
   const observer = new MutationObserver(function (mutations) {
-    // Collect all added nodes from mutations
-    const addedNodes = [];
     mutations.forEach(function (mutation) {
+      if (mutation.type === 'characterData') {
+        pendingTextNodes.add(mutation.target);
+        return;
+      }
       mutation.addedNodes.forEach(function (node) {
-        if (node.nodeType === 1 || node.nodeType === 3) {
-          addedNodes.push(node);
+        if (node.nodeType === 1) {
+          pendingElements.add(node);
+        } else if (node.nodeType === 3) {
+          pendingTextNodes.add(node);
         }
       });
     });
 
-    if (addedNodes.length > 0) {
+    if (pendingElements.size > 0 || pendingTextNodes.size > 0) {
       // Debounce the transliteration to prevent performance lag on massive DOM updates
       if (timeout) clearTimeout(timeout);
       timeout = setTimeout(function () {
-        addedNodes.forEach(function (node) {
-          if (node.nodeType === 3) {
-            // If it's a text node, check parent and transliterate
-            if (!shouldSkipNode(node) && node.nodeValue && node.nodeValue.trim() !== '') {
-              node.nodeValue = transliterate(node.nodeValue);
-            }
-          } else {
-            // If it's an element, scan its subtree
-            srbTranslit(node);
+        const textNodes = Array.from(pendingTextNodes);
+        const elements = Array.from(pendingElements);
+        pendingTextNodes.clear();
+        pendingElements.clear();
+        textNodes.forEach(function (node) {
+          if (!shouldSkipNode(node) && node.nodeValue && node.nodeValue.trim() !== '') {
+            const newVal = transliterate(node.nodeValue);
+            if (newVal !== node.nodeValue) node.nodeValue = newVal;
           }
+        });
+        elements.forEach(function (node) {
+          srbTranslit(node);
         });
       }, 150);
     }
@@ -104,7 +118,8 @@
 
   observer.observe(document.body || document.documentElement, {
     childList: true,
-    subtree: true
+    subtree: true,
+    characterData: true
   });
 
 })();
